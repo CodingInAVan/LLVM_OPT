@@ -106,49 +106,44 @@ bool SimpleLICMPass::hoistInvariantInstructions(llvm::Loop *L, llvm::DominatorTr
 
     // Hoist instructions in correct order
     // Process instructions multiple times until no more hoisting can be done
-    bool progress;
-    do {
-        progress = false;
-        for (Instruction* I : invariantInsts) {
-            // Skip instructions that are no longer in the loop
-            if (!L->contains(I->getParent()))
-                continue;
+    for (Instruction* I : invariantInsts) {
+        // Skip instructions that are no longer in the loop
+        if (!L->contains(I->getParent()))
+            continue;
 
-            // Check if all operands are available in the preheader
-            bool allOperandsAvailable = true;
-            for (Value* op : I->operands()) {
-                if (Instruction* opInst = dyn_cast<Instruction>(op)) {
-                    // If operand is in the loop and hasn't been hoisted yet, we can't hoist this instruction yet
-                    if (L->contains(opInst->getParent())) {
-                        allOperandsAvailable = false;
+        // Check if all operands are available in the preheader
+        bool allOperandsAvailable = true;
+        for (Value* op : I->operands()) {
+            if (Instruction* opInst = dyn_cast<Instruction>(op)) {
+                // If operand is in the loop and hasn't been hoisted yet, we can't hoist this instruction yet
+                if (L->contains(opInst->getParent())) {
+                    allOperandsAvailable = false;
+                    break;
+                }
+            }
+        }
+
+        if (allOperandsAvailable && !I->mayHaveSideEffects() && llvm::isSafeToSpeculativelyExecute(I)) {
+            // Double-check that preheader dominates all uses
+            bool safeToHoist = true;
+            for (User* U : I->users()) {
+                if (Instruction* userInst = dyn_cast<Instruction>(U)) {
+                    BasicBlock* userBB = userInst->getParent();
+                    if (!DT.dominates(preHeader, userBB)) {
+                        safeToHoist = false;
+                        errs() << "[SimpleLICM] Not safe to hoist: " << *I << " - preheader doesn't dominate use in: " << *userInst << "\n";
                         break;
                     }
                 }
             }
 
-            if (allOperandsAvailable && !I->mayHaveSideEffects() && llvm::isSafeToSpeculativelyExecute(I)) {
-                // Double-check that preheader dominates all uses
-                bool safeToHoist = true;
-                for (User* U : I->users()) {
-                    if (Instruction* userInst = dyn_cast<Instruction>(U)) {
-                        BasicBlock* userBB = userInst->getParent();
-                        if (!DT.dominates(preHeader, userBB)) {
-                            safeToHoist = false;
-                            errs() << "[SimpleLICM] Not safe to hoist: " << *I << " - preheader doesn't dominate use in: " << *userInst << "\n";
-                            break;
-                        }
-                    }
-                }
-
-                if (safeToHoist) {
-                    errs() << "[SimpleLICM] Hoisting: " << *I << "\n";
-                    I->moveBefore(preHeader->getTerminator());
-                    changed = true;
-                    progress = true;
-                }
+            if (safeToHoist) {
+                errs() << "[SimpleLICM] Hoisting: " << *I << "\n";
+                I->moveBefore(preHeader->getTerminator());
+                changed = true;
             }
         }
-    } while (progress);
+    }
 
     return changed;
 }
